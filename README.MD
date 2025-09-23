@@ -6,7 +6,7 @@ A lightweight, multithreaded HTTP server implemented in C using POSIX sockets an
 ---
 
 ## Demo
-The project is deployed on [AWS](http://ec2-13-203-231-9.ap-south-1.compute.amazonaws.com:6970/)
+The project is deployed on [AWS](http://ec2-3-111-86-156.ap-south-1.compute.amazonaws.com:6970/)
 
 Watch the demo (It takes some time to load or go to the demo_video folder ) ->
 ![Demo GIF](demo_video/server.gif)
