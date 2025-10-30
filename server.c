@@ -1,7 +1,9 @@
-#include <sys/socket.h>
+#include <sys/socket.h> 
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <stdio.h>
+#include <openssl/ssl.h>
+#include <openssl/err.h>
 #include <arpa/inet.h>
 #include <string.h>
 #include <unistd.h>
@@ -92,20 +94,29 @@ string http_response_generate(char* buf,size_t buf_len,http_status status,size_t
     response.data=buf;
     return response;
 }
-bool http_send_response(int socket,string header,string body){
-    ssize_t n=send(socket,header.data ,header.len,MSG_MORE); ///MSG_MORE to prevent under sized packets
-    if(n<0){
-        perror("send()");
-        return false;
+string_view err_404 =STRING_VIEW_FROM_LITERAL("<p>Error 404 </p>");
+
+bool ssl_write_all(SSL *ssl, const char *buf, size_t len){
+    size_t sent = 0;
+    while (sent < len) {
+        int r = SSL_write(ssl, buf + sent, (int)(len - sent));
+        if (r <= 0) {
+            int e = SSL_get_error(ssl, r);
+            ERR_print_errors_fp(stderr);
+            return false;
+        }
+        sent += (size_t)r;
     }
-    if(n==0){
-        fprintf(stderr,"send() returned 0");
-    }
-    n=send(socket,body.data,body.len,0);
     return true;
 }
-string_view err_404 =STRING_VIEW_FROM_LITERAL("<p>Error 404 </p>");
-bool http_serve_file(int socket,string filename){
+
+bool http_send_response_ssl(SSL *ssl,string header,string body){
+    if(!ssl_write_all(ssl, header.data, header.len)) return false;
+    if(!ssl_write_all(ssl, body.data, body.len)) return false;
+    return true;
+}
+
+bool http_serve_file_ssl(SSL *ssl,string filename){
     char buf[128];
     string hd;
     string_view header;
@@ -124,62 +135,52 @@ bool http_serve_file(int socket,string filename){
     const char * mime_type=get_mime_type(filename_buf);
     fs_metadata file_metadata=fs_get_metadata(string_from_cstr(filename_buf));
     if(!file_metadata.exists){
-        (void)http_send_response(socket,http_response_generate(buf,sizeof(buf),HTTP_RES_NOT_FOUND,err_404.len,"text/html"),string_from_view(err_404));
+        (void)http_send_response_ssl(ssl,http_response_generate(buf,sizeof(buf),HTTP_RES_NOT_FOUND,err_404.len,"text/html"),string_from_view(err_404));
         return false;
     }
     hd=http_response_generate(buf,sizeof(buf),HTTP_RES_OK,file_metadata.size,mime_type);
     header=view_from_string(hd);
-    // file=fopen(filename_buf,"rb");
-    // if(!file){
-    //     printf("Couldnt open file %s",filename_buf);
-    //     (void)http_send_response(socket,http_response_generate(buf,sizeof(buf),HTTP_RES_NOT_FOUND,err_404.len),err_404);
-    //     return false;
-    // }
-    // char * file_buf= (char *) malloc(file_metadata.size);
-    // if(!file_buf){
-    //     (void)http_send_response(socket,http_response_generate(buf,sizeof(buf),HTTP_RES_INTERNAL_SERVER_ERR,err_404.len),err_404);
-    //     return false;
-    // }
-    // fread(file_buf,1,file_metadata.size,file);
-    ssize_t n=send(socket,header.start ,header.len,MSG_MORE); ///MSG_MORE to prevent under sized packets
-    if(n<0){
-        perror("send()");
-        return_value=false;
+    if(!http_send_response_ssl(ssl, string_from_view(header), string_from_view(STRING_VIEW_FROM_LITERAL("")))){
+         return_value=false;
         goto cleanup;
     }
-    if(n==0){
-        fprintf(stderr,"send() returned 0");
-    }
+
+
+   
+
     in_fd=open(filename_buf,O_RDONLY);
     if(in_fd<0){
         return_value=false;
-        (void)http_send_response(socket,http_response_generate(buf,sizeof(buf),HTTP_RES_NOT_FOUND,err_404.len,"text/html"),string_from_view(err_404));
+        (void)http_send_response_ssl(ssl,http_response_generate(buf,sizeof(buf),HTTP_RES_NOT_FOUND,err_404.len,"text/html"),string_from_view(err_404));
         goto cleanup;
     }
-    // while(sent < file_metadata.size){
-    //     result=sendfile(socket,in_fd,&sendfile_offset,file_metadata.size);
-    //     if(result <0){
-    //         printf("sendfile() failed for %s",filename_buf);
-    //         return_value=false;
-    //         (void)http_send_response(socket,http_response_generate(buf,sizeof(buf),HTTP_RES_INTERNAL_SERVER_ERR,err_404.len,"text/html"),string_from_view(err_404));
-    //         goto cleanup;
-    //     }
-    //     sent += result;
-    // }
-    size_t remaining =file_metadata.size;
-    while(remaining>0){
-        ssize_t bytes_sent=sendfile(socket,in_fd,&sendfile_offset,remaining);
-        if(bytes_sent<0){
-            perror("sendfile()");
-            return_value=false;
-            break;
-        }
-        if(bytes_sent==0){
-            fprintf(stderr,"socket closed 0 bytes send");
-            break;
-        }
-        remaining-=bytes_sent;
+
+    const size_t chunk_size = 16 * 1024;
+    char *read_buf = malloc(chunk_size);
+    if(!read_buf){
+        (void)http_send_response_ssl(ssl,http_response_generate(buf,sizeof(buf),HTTP_RES_INTERNAL_SERVER_ERR,err_404.len,"text/html"),string_from_view(err_404));
+        return_value=false;
+        goto cleanup;
     }
+    ssize_t r;
+    while((r = read(in_fd, read_buf, chunk_size)) > 0){
+        ssize_t written = 0;
+        while (written < r) {
+            int w = SSL_write(ssl, read_buf + written, (int)(r - written));
+            if (w <= 0) {
+                ERR_print_errors_fp(stderr);
+                free(read_buf);
+                return_value = false;
+                goto cleanup;
+            }
+            written += w;
+        }
+    }
+    if (r < 0) {
+        perror("read()");
+        return_value=false;
+    }
+    free(read_buf);
 cleanup:
     if(in_fd>0){
         close(in_fd);
@@ -188,7 +189,8 @@ cleanup:
 }
 
 void* handle_client(void * client_socket_ptr) {
-    int client_socket=(int)client_socket_ptr;
+    SSL *ssl = (SSL *)client_socket_ptr;
+    int client_socket = SSL_get_fd(ssl);
     ssize_t n = 0;
     char buf[8192];
     string hello = string_from_cstr(
@@ -206,10 +208,21 @@ void* handle_client(void * client_socket_ptr) {
     );
     
     for (;;) {
+        if (SSL_accept(ssl) <= 0) {
+            ERR_print_errors_fp(stderr);
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+            if (client_socket >= 0) close(client_socket);
+            return (const void *) -1;
+        }
+
         memset(buf, 0, sizeof(buf));
-        n = read(client_socket, buf, sizeof(buf) - 1);
+        n = SSL_read(ssl, buf, sizeof(buf) - 1);
         if (n < 0) {
-            perror("read(client_socket)");
+            ERR_print_errors_fp(stderr);
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
+            if (client_socket >= 0) close(client_socket);
             return (const void *) -1;
         }
         if (n == 0) {
@@ -222,6 +235,8 @@ void* handle_client(void * client_socket_ptr) {
         char *eol = strstr(buf, CRLF);
         if (!eol) {
             fprintf(stderr, "Malformed request (no CRLF)\n");
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
             close(client_socket);
             return (const void *) -1;
         }
@@ -235,6 +250,8 @@ void* handle_client(void * client_socket_ptr) {
         if (comps.count != 3) {
             fprintf(stderr, "Invalid request line (got %zu parts)\n", comps.count);
             free_splits(&comps);
+            SSL_shutdown(ssl);
+            SSL_free(ssl);
             close(client_socket);
             return (const void *) -1;
         }
@@ -257,8 +274,8 @@ void* handle_client(void * client_socket_ptr) {
 
 
         if (strings_equal(&req_line.uri, &route_hello)) {
-            http_send_response(
-                client_socket,
+            http_send_response_ssl(
+                ssl,
                 http_response_generate(buf, sizeof(buf), HTTP_RES_OK, hello.len,"text/html"),
                 hello
             );
@@ -266,25 +283,31 @@ void* handle_client(void * client_socket_ptr) {
             //// and prompt browser to download file
         }
         else if (strings_equal(&req_line.uri, &route_bye)) {
-            http_send_response(
-                client_socket,
+            http_send_response_ssl(
+                ssl,
                 http_response_generate(buf, sizeof(buf), HTTP_RES_OK, bye.len,"text/html"),
                 bye
             );
         }
         else if (strings_equal(&req_line.uri, &route_index)
               || strings_equal(&req_line.uri, &route_root)) {
-            if (!http_serve_file(client_socket, string_from_cstr("index.html"))) {
+            if (!http_serve_file_ssl(ssl, string_from_cstr("index.html"))) {
+                SSL_shutdown(ssl);
+                SSL_free(ssl);
                 return (const void *) -1;
             }
         }
         else {
-            if (!http_serve_file(client_socket, req_line.uri)) {
+            if (!http_serve_file_ssl(ssl, req_line.uri)) {
+                SSL_shutdown(ssl);
+                SSL_free(ssl);
                 return (const void *) -1;
             }
             /// for react router handling serve index.html if serve file above fails
         }
 
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
         close(client_socket);
         break;
     }
@@ -334,6 +357,25 @@ int main(void) {
     }
     printf("bind succeeded\n");
 
+    SSL_library_init();
+    OpenSSL_add_all_algorithms();
+    SSL_load_error_strings();
+    /// init ssl context
+    const SSL_METHOD *method = TLS_server_method();
+    SSL_CTX *ctx = SSL_CTX_new(method);
+    if (!ctx) {
+        ERR_print_errors_fp(stderr);
+        exit(1);
+    }
+    //// paths of our SSL Certs 
+    if (SSL_CTX_use_certificate_file(ctx, "server.crt", SSL_FILETYPE_PEM) <= 0 ||
+    SSL_CTX_use_PrivateKey_file(ctx, "server.key", SSL_FILETYPE_PEM) <= 0) {
+    ERR_print_errors_fp(stderr);
+    exit(1);
+    }
+
+
+
     rc = listen(tcp_socket, SOMAXCONN);///SOMAXCONN = size of our request queue
     if (rc < 0) {
         perror("listen()");
@@ -343,21 +385,34 @@ int main(void) {
     printf("listen succeeded\n");
     
     
-    pthread_t* threads;
+    pthread_t* threads = NULL;
     size_t threads_count=0;
     size_t threads_capacity=10;
     threads=calloc(threads_capacity,sizeof(pthread_t));
     for (;;) {
         printf("Waiting for connections...\n");
         client_socket = accept(tcp_socket,(struct sockaddr *)&client_sock,&client_len); /// pop front from queue
+        if (client_socket < 0) {
+            perror("accept()");
+            continue;
+        }
         char client_ip[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &(client_sock.sin_addr), client_ip, INET_ADDRSTRLEN);
         printf("Got connection from %s:%d\n", client_ip, ntohs(client_sock.sin_port));
         pthread_t thread;
         //// bind thread to routine
-        rc=pthread_create(&thread,NULL,handle_client,client_socket);
+        SSL *ssl = SSL_new(ctx);
+        if (!ssl) {
+            fprintf(stderr, "SSL_new failed\n");
+            close(client_socket);
+            continue;
+        }
+        SSL_set_fd(ssl, client_socket);
+        rc=pthread_create(&thread,NULL,handle_client,ssl);
         if(rc<0){
             perror("pthread_create()");
+            SSL_free(ssl);
+            close(client_socket);
             continue;
         }
         pthread_detach(thread);
@@ -397,6 +452,8 @@ exit:
     for(size_t i=0;i<threads_count;i++){
         pthread_kill(threads[i],SIGTERM);
     }
+    if (threads) free(threads);
     close(tcp_socket);
+    if (ctx) SSL_CTX_free(ctx);
     return ret;
 }
