@@ -1,12 +1,12 @@
 
-# Multithreaded HTTP Server in C
+# Multithreaded HTTPS Server in C
 
-A lightweight, multithreaded HTTP server implemented in C using POSIX sockets and pthreads. This server runs on Linux, serves static files, and supports URI-based routing. It is designed for educational and practical use, demonstrating core concepts of network programming, concurrency, and HTTP protocol handling.
+A lightweight, multithreaded HTTPS server implemented in C using POSIX sockets, OpenSSL and pthreads. This server runs on Linux, serves static files, and supports URI-based routing. It is designed for educational and practical use, demonstrating core concepts of network programming, concurrency, and HTTP protocol handling.
 
 ---
 
 ## Demo
-The project is deployed on [AWS](http://ec2-3-111-86-156.ap-south-1.compute.amazonaws.com:6970/)
+The project is deployed on [AWS](https://harshpanchal.duckdns.org:6970/)
 
 Watch the demo (It takes some time to load or go to the demo_video folder ) ->
 ![Demo GIF](demo_video/server.gif)
@@ -25,6 +25,7 @@ Kcachegrind call map->
 ## Features
 
 - **POSIX Sockets**: Handles TCP connections using the standard Linux socket API.
+- **TLS via OpenSSL**: Secures all client-server communications using SSL/TLS encryption through the OpenSSL library.
 - **Multithreaded**: Uses pthreads to process multiple client requests concurrently.
 - **Static File Serving**: Delivers HTML, JPEG, CSS, JavaScript and other static files from a specified directory.
 - **URI-Based Routing**: Maps incoming HTTP requests to files or handler functions based on the URI.
