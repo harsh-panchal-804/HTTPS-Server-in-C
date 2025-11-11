@@ -120,8 +120,7 @@ bool http_send_response_ssl(SSL *ssl,string header,string body){
 bool http_serve_file_ssl(SSL *ssl,string filename){
         char buf[256];
         string hd;
-        /* IMPORTANT: create a heap-owned header copy so the header's memory
-                outlives the stack buffer inside http_response_generate(). */
+        
         string header_copy = { .data = NULL, .len = 0 };
         char filename_buf[PATH_MAX];
         bool return_value=true;
@@ -140,7 +139,7 @@ bool http_serve_file_ssl(SSL *ssl,string filename){
         }
         hd=http_response_generate(buf,sizeof(buf),HTTP_RES_OK,file_metadata.size,mime_type);
 
-        /* copy header into heap so it isn't a pointer to a transient stack buffer */
+       
         header_copy.len = hd.len;
         header_copy.data = malloc(header_copy.len);
         if (!header_copy.data) {
@@ -150,7 +149,7 @@ bool http_serve_file_ssl(SSL *ssl,string filename){
         }
         memcpy(header_copy.data, hd.data, header_copy.len);
 
-        /* send header only (no extra nulls) */
+        ///send header only for null error
         if(!ssl_write_all(ssl, header_copy.data, header_copy.len)){ // Use direct write for header
                   return_value=false;
                   goto cleanup;
@@ -164,7 +163,7 @@ bool http_serve_file_ssl(SSL *ssl,string filename){
         }
 
         const size_t chunk_size = 16 * 1024;
-        char *read_buf = malloc(chunk_size); // Revert to malloc, rely on read() and explicit skip
+        char *read_buf = malloc(chunk_size); // revert to malloc
         if(!read_buf){
                 (void)http_send_response_ssl(ssl,http_response_generate(buf,sizeof(buf),HTTP_RES_INTERNAL_SERVER_ERR,err_404.len,"text/html"),string_from_view(err_404));
                 return_value=false;
@@ -178,7 +177,7 @@ bool http_serve_file_ssl(SSL *ssl,string filename){
                 size_t write_offset = 0;
                 size_t write_len = (size_t)r;
 
-                // FINAL FIX: Explicitly check for and skip a leading NUL byte
+                /// brute check for null
                 if (first_chunk && read_buf[0] == '\0') {
                         write_offset = 1;
                         write_len -= 1;
@@ -261,7 +260,7 @@ void* handle_client(void * client_socket_ptr) {
                 char *eol = strstr(buf, CRLF);
                 if (!eol) {
                         fprintf(stderr, "Malformed request (no CRLF)\n");
-                        free_splits(NULL); // This line needs `free_splits` to handle null or be removed. Assuming you have a proper cleanup function.
+                        free_splits(NULL); 
                         SSL_shutdown(ssl);
                         SSL_free(ssl);
                         close(client_socket);
